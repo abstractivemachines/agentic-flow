@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -53,6 +54,58 @@ class TaskResult:
     errors: list[str] = field(default_factory=list)
 
 
+class SharedContext:
+    """Thread-safe key-value store for passing context between agents.
+
+    Agents can store artifacts, plans, and other data that subsequent agents
+    can read. All operations are thread-safe for use with async orchestration.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
+        self._lock = threading.Lock()
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._data[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._data.get(key, default)
+
+    def delete(self, key: str) -> bool:
+        with self._lock:
+            if key in self._data:
+                del self._data[key]
+                return True
+            return False
+
+    def keys(self) -> list[str]:
+        with self._lock:
+            return list(self._data.keys())
+
+    def to_prompt_fragment(self) -> str:
+        """Render stored context as a text block agents can include in prompts."""
+        with self._lock:
+            if not self._data:
+                return ""
+            lines = ["Shared context from previous agents:"]
+            for key, value in self._data.items():
+                text = str(value)
+                if len(text) > 2000:
+                    text = text[:2000] + "... (truncated)"
+                lines.append(f"  [{key}]: {text}")
+            return "\n".join(lines)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    def __contains__(self, key: str) -> bool:
+        with self._lock:
+            return key in self._data
+
+
 @dataclass
 class Workspace:
     """Shared workspace for agents — backed by a physical directory and in-memory metadata."""
@@ -60,6 +113,7 @@ class Workspace:
     root: Path
     metadata: dict[str, Any] = field(default_factory=dict)
     task_results: list[TaskResult] = field(default_factory=list)
+    shared_context: SharedContext = field(default_factory=SharedContext)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)

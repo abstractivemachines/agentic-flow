@@ -8,6 +8,7 @@ from typing import Any
 import anthropic
 
 from agenticflow.models import AgentType, Task, TaskResult, Workspace
+from agenticflow.retry import retry_api_call
 from agenticflow.tools import get_tools_for_agent
 from agenticflow.tools.base import Tool
 
@@ -39,21 +40,31 @@ class Agent:
         self.tools: list[Tool] = get_tools_for_agent(self.agent_type, workspace.root)
         self._tool_map: dict[str, Tool] = {t.name: t for t in self.tools}
 
+    def _build_system_prompt(self) -> str:
+        """Build the full system prompt, including shared context if available."""
+        parts = [self.system_prompt]
+        ctx_fragment = self.workspace.shared_context.to_prompt_fragment()
+        if ctx_fragment:
+            parts.append(ctx_fragment)
+        return "\n\n".join(parts)
+
     def run(self, task: Task) -> TaskResult:
         """Execute the agentic loop for the given task."""
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": task.to_prompt()},
         ]
         tool_defs = [t.to_anthropic_dict() for t in self.tools]
+        system = self._build_system_prompt()
 
         for turn in range(MAX_TURNS):
             if self.verbose:
                 logger.info("[%s] turn %d", self.agent_type.value, turn + 1)
 
-            response = self.client.messages.create(
+            response = retry_api_call(
+                self.client.messages.create,
                 model=self.model,
                 max_tokens=self.max_tokens,
-                system=self.system_prompt,
+                system=system,
                 tools=tool_defs,
                 messages=messages,
             )

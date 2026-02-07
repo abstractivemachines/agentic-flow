@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from agenticflow.tools.base import Tool, ToolResult
+from agenticflow.tools.base import ToolResult
 from agenticflow.tools.code_exec import RunCommandTool
 from agenticflow.tools.file_io import ListDirectoryTool, ReadFileTool, WriteFileTool
 

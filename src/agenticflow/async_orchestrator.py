@@ -1,117 +1,30 @@
-"""Orchestrator — Claude-powered dispatch loop that routes work to specialist agents."""
+"""Async orchestrator — runs the dispatch loop using AsyncAnthropic."""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any, Generator
+from typing import Any, AsyncGenerator
 
 import anthropic
 
-from agenticflow.agents.coder import CoderAgent
-from agenticflow.agents.planner import PlannerAgent
-from agenticflow.agents.reviewer import ReviewerAgent
-from agenticflow.agents.tester import TesterAgent
 from agenticflow.models import AgentType, Task, TaskResult, Workspace
-from agenticflow.retry import retry_api_call
+from agenticflow.orchestrator import (
+    AGENT_CLASSES,
+    CONTEXT_TOOL,
+    DEFAULT_MODEL,
+    DISPATCH_TOOL,
+    MAX_ORCHESTRATOR_TURNS,
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    StreamEvent,
+)
+from agenticflow.retry import async_retry_api_call
 
 logger = logging.getLogger(__name__)
 
-ORCHESTRATOR_SYSTEM_PROMPT = """\
-You are the orchestrator of a multi-agent software engineering system. Your job \
-is to break down the user's request and dispatch work to specialist agents.
 
-Available agents:
-- **planner**: Creates implementation plans. Use for complex tasks that need \
-  architecture/design thinking before coding.
-- **coder**: Writes and modifies code. Give it clear instructions on what to build.
-- **reviewer**: Reviews code for correctness, quality, and security. Use after \
-  coding to catch issues.
-- **tester**: Writes and runs tests. Use after coding to verify correctness.
-
-Workflow guidelines:
-- For non-trivial tasks, start with the planner, then coder, then reviewer/tester.
-- For simple tasks, you can go straight to the coder.
-- If the reviewer finds issues, dispatch the coder again with the feedback.
-- If tests fail, dispatch the coder to fix the issues, then re-test.
-- You can dispatch agents multiple times as needed.
-
-Use the dispatch_agent tool to send work to agents. Include all relevant context \
-in the task description — agents don't share memory of previous conversations.
-
-When all work is complete, provide a final summary to the user.
-"""
-
-DISPATCH_TOOL = {
-    "name": "dispatch_agent",
-    "description": (
-        "Dispatch a task to a specialist agent. The agent will execute the task "
-        "and return a result summary."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "agent_type": {
-                "type": "string",
-                "enum": ["planner", "coder", "reviewer", "tester"],
-                "description": "Which specialist agent to dispatch.",
-            },
-            "task_description": {
-                "type": "string",
-                "description": (
-                    "Detailed description of what the agent should do. "
-                    "Include all necessary context."
-                ),
-            },
-        },
-        "required": ["agent_type", "task_description"],
-    },
-}
-
-CONTEXT_TOOL = {
-    "name": "set_shared_context",
-    "description": (
-        "Store a value in shared context so subsequent agents can access it. "
-        "Use this to pass plans, decisions, or artifacts between agents."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "key": {
-                "type": "string",
-                "description": "Key name for the context entry.",
-            },
-            "value": {
-                "type": "string",
-                "description": "Value to store.",
-            },
-        },
-        "required": ["key", "value"],
-    },
-}
-
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
-MAX_ORCHESTRATOR_TURNS = 20
-
-AGENT_CLASSES = {
-    AgentType.PLANNER: PlannerAgent,
-    AgentType.CODER: CoderAgent,
-    AgentType.REVIEWER: ReviewerAgent,
-    AgentType.TESTER: TesterAgent,
-}
-
-
-@dataclass
-class StreamEvent:
-    """An event emitted during streaming orchestration."""
-
-    kind: str  # "text", "dispatch", "agent_result", "done", "error"
-    data: str
-
-
-class Orchestrator:
-    """Top-level orchestrator that uses Claude to decide which agents to invoke."""
+class AsyncOrchestrator:
+    """Async version of the orchestrator using AsyncAnthropic."""
 
     def __init__(
         self,
@@ -125,10 +38,10 @@ class Orchestrator:
         self.model = model
         self.agent_models = agent_models or {}
         self.verbose = verbose
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.AsyncAnthropic()
 
-    def run(self, user_request: str) -> str:
-        """Run the orchestrator loop for a user request. Returns final summary."""
+    async def run(self, user_request: str) -> str:
+        """Run the orchestrator loop asynchronously. Returns final summary."""
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": user_request},
         ]
@@ -136,9 +49,9 @@ class Orchestrator:
 
         for turn in range(MAX_ORCHESTRATOR_TURNS):
             if self.verbose:
-                logger.info("[orchestrator] turn %d", turn + 1)
+                logger.info("[async-orchestrator] turn %d", turn + 1)
 
-            response = retry_api_call(
+            response = await async_retry_api_call(
                 self.client.messages.create,
                 model=self.model,
                 max_tokens=4096,
@@ -160,8 +73,10 @@ class Orchestrator:
 
         return "Orchestrator reached maximum turns without completing."
 
-    def run_stream(self, user_request: str) -> Generator[StreamEvent, None, None]:
-        """Run the orchestrator loop, yielding StreamEvents as work progresses."""
+    async def run_stream(
+        self, user_request: str
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Async streaming orchestrator loop."""
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": user_request},
         ]
@@ -169,27 +84,24 @@ class Orchestrator:
 
         for turn in range(MAX_ORCHESTRATOR_TURNS):
             if self.verbose:
-                logger.info("[orchestrator] turn %d", turn + 1)
+                logger.info("[async-orchestrator] turn %d", turn + 1)
 
             collected_content: list[Any] = []
             stop_reason = None
 
-            with self.client.messages.stream(
+            async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=4096,
                 system=ORCHESTRATOR_SYSTEM_PROMPT,
                 tools=tools,
                 messages=messages,
             ) as stream:
-                for event in stream:
+                async for event in stream:
                     if hasattr(event, "type"):
-                        if event.type == "content_block_start":
-                            if hasattr(event.content_block, "text"):
-                                pass  # will accumulate via deltas
-                        elif event.type == "content_block_delta":
+                        if event.type == "content_block_delta":
                             if hasattr(event.delta, "text"):
                                 yield StreamEvent(kind="text", data=event.delta.text)
-                final_message = stream.get_final_message()
+                final_message = await stream.get_final_message()
                 collected_content = final_message.content
                 stop_reason = final_message.stop_reason
 
@@ -199,7 +111,7 @@ class Orchestrator:
                 yield StreamEvent(kind="done", data="")
                 return
 
-            tool_results = self._process_tool_calls(collected_content, stream_events=True)
+            tool_results = self._process_tool_calls(collected_content)
             for tr in tool_results:
                 if not tr.get("is_error"):
                     yield StreamEvent(kind="agent_result", data=tr["content"])
@@ -207,9 +119,7 @@ class Orchestrator:
 
         yield StreamEvent(kind="error", data="Orchestrator reached maximum turns.")
 
-    def _process_tool_calls(
-        self, content: list[Any], stream_events: bool = False
-    ) -> list[dict[str, Any]]:
+    def _process_tool_calls(self, content: list[Any]) -> list[dict[str, Any]]:
         """Process tool_use blocks and return tool_result dicts."""
         tool_results = []
         for block in content:
@@ -242,7 +152,10 @@ class Orchestrator:
         return tool_results
 
     def _dispatch(self, tool_input: dict[str, Any]) -> str:
-        """Create and run a specialist agent, returning the result as a string."""
+        """Create and run a specialist agent, returning the result as a string.
+
+        Note: agent execution is synchronous since agents use the sync Anthropic client.
+        """
         agent_type_str = tool_input["agent_type"]
         task_description = tool_input["task_description"]
 
@@ -250,7 +163,7 @@ class Orchestrator:
         agent_cls = AGENT_CLASSES[agent_type]
 
         if self.verbose:
-            logger.info("[orchestrator] dispatching to %s", agent_type.value)
+            logger.info("[async-orchestrator] dispatching to %s", agent_type.value)
 
         agent_model = self.agent_models.get(agent_type.value, self.model)
 
@@ -265,7 +178,6 @@ class Orchestrator:
 
         self.workspace.add_result(task_result)
 
-        # Store the result summary in shared context
         ctx_key = f"result_{agent_type.value}_{task.id}"
         self.workspace.shared_context.set(ctx_key, task_result.summary)
 
