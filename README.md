@@ -14,6 +14,10 @@ User Request
 │ Orchestrator │ ── Claude decides which agent to invoke
 └─────┬───────┘
       │  dispatch_agent tool calls
+      │
+      ├─── Backend: api ──────── Direct Anthropic API calls (ANTHROPIC_API_KEY)
+      ├─── Backend: claude-code ─ Claude Code CLI via claude-agent-sdk (no key needed)
+      │
       ▼
 ┌──────────┬──────────┬──────────┐
 │ Planner  │  Coder   │ Reviewer │  Tester
@@ -44,9 +48,9 @@ git clone https://github.com/abstractivemachines/agentic-flow.git
 cd agentic-flow
 
 # Install
-pip install -e ".[dev]"
+pip install -e ".[dev,claude-code]"
 
-# Set your API key
+# Set your API key (only needed for the api backend)
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
@@ -55,15 +59,26 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### CLI
 
 ```bash
-# Simple task
+# Simple task (uses api backend by default)
 agenticflow "Create a Python function that checks if a number is prime"
 
 # Specify model and workspace
 agenticflow "Build a REST API with Flask" --model claude-sonnet-4-5-20250929 --workspace ./my-project
 
+# Use Claude Code backend (no API key needed — authenticates via Claude Code CLI)
+agenticflow "Build a REST API with Flask" --backend claude-code
+
 # Verbose mode
 agenticflow "Refactor the auth module" -v
 ```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `task` | Task description (positional) | — |
+| `--backend` | `api` or `claude-code` | `api` |
+| `--model` | Claude model ID | `claude-sonnet-4-5-20250929` |
+| `--workspace` | Working directory for agents | `./workspace` |
+| `-v, --verbose` | Enable verbose logging | off |
 
 ### Python API
 
@@ -122,6 +137,38 @@ orchestrator = Orchestrator(
         "tester": "claude-sonnet-4-5-20250929", # Sonnet for tests
     },
 )
+```
+
+### Claude Code Backend
+
+The `claude-code` backend delegates orchestration and tool execution to the Claude Code CLI via `claude-agent-sdk`. No `ANTHROPIC_API_KEY` is needed — authentication is handled by the CLI.
+
+```python
+import asyncio
+from pathlib import Path
+from agenticflow.claude_code import ClaudeCodeOrchestrator
+from agenticflow.models import Workspace
+
+async def main():
+    workspace = Workspace(root=Path("./my-project"))
+    orchestrator = ClaudeCodeOrchestrator(
+        workspace=workspace,
+        model="claude-sonnet-4-5-20250929",
+        agent_models={"planner": "claude-opus-4-6"},
+        verbose=True,
+    )
+    result = await orchestrator.run("Build a REST API")
+    print(result)
+
+asyncio.run(main())
+```
+
+Streaming is also supported:
+
+```python
+async for event in orchestrator.run_stream("Build a web scraper"):
+    if event.kind == "text":
+        print(event.data, end="", flush=True)
 ```
 
 ## Development
