@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from agenticflow.models import AgentType, Task, TaskResult, Workspace
@@ -102,6 +103,7 @@ async def run_agent(
     *,
     model: str | None = None,
     verbose: bool = False,
+    add_dirs: list[str] | None = None,
 ) -> TaskResult:
     """Run a specialist agent via Claude Code CLI.
 
@@ -120,6 +122,7 @@ async def run_agent(
         cwd=str(workspace.root.resolve()),
         permission_mode="acceptEdits",
         max_turns=25,
+        **({"add_dirs": add_dirs} if add_dirs else {}),
     )
     if model:
         options.model = model
@@ -168,6 +171,7 @@ def _build_orchestrator_mcp_server(
     agent_models: dict[str, str],
     default_model: str | None,
     verbose: bool,
+    add_dirs: list[str] | None = None,
 ) -> Any:
     """Build an in-process MCP server with dispatch_agent and set_shared_context tools."""
     sdk = _import_sdk()
@@ -199,6 +203,7 @@ def _build_orchestrator_mcp_server(
             workspace,
             model=agent_model,
             verbose=verbose,
+            add_dirs=add_dirs,
         )
 
         workspace.add_result(task_result)
@@ -259,22 +264,36 @@ class ClaudeCodeOrchestrator:
         model: str | None = None,
         agent_models: dict[str, str] | None = None,
         verbose: bool = False,
+        invocation_dir: Path | None = None,
     ) -> None:
         _import_sdk()  # Validate SDK is available early
         self.workspace = workspace
         self.model = model
         self.agent_models = agent_models or {}
         self.verbose = verbose
+        self.invocation_dir = invocation_dir
+
+    def _build_add_dirs(self) -> list[str] | None:
+        """Build the add_dirs list from invocation_dir if it differs from workspace root."""
+        if self.invocation_dir is None:
+            return None
+        inv = self.invocation_dir.resolve()
+        ws = self.workspace.root.resolve()
+        if inv == ws:
+            return None
+        return [str(inv)]
 
     async def run(self, user_request: str) -> str:
         """Run the orchestrator loop via Claude Code CLI. Returns final summary."""
         sdk = _import_sdk()
+        add_dirs = self._build_add_dirs()
 
         server = _build_orchestrator_mcp_server(
             self.workspace,
             self.agent_models,
             self.model,
             self.verbose,
+            add_dirs=add_dirs,
         )
 
         system_prompt = {
@@ -293,6 +312,7 @@ class ClaudeCodeOrchestrator:
             cwd=str(self.workspace.root.resolve()),
             permission_mode="acceptEdits",
             max_turns=MAX_ORCHESTRATOR_TURNS,
+            **({"add_dirs": add_dirs} if add_dirs else {}),
         )
         if self.model:
             options.model = self.model
@@ -313,12 +333,14 @@ class ClaudeCodeOrchestrator:
     async def run_stream(self, user_request: str) -> AsyncGenerator[StreamEvent, None]:
         """Run the orchestrator loop, yielding StreamEvents as work progresses."""
         sdk = _import_sdk()
+        add_dirs = self._build_add_dirs()
 
         server = _build_orchestrator_mcp_server(
             self.workspace,
             self.agent_models,
             self.model,
             self.verbose,
+            add_dirs=add_dirs,
         )
 
         system_prompt = {
@@ -338,6 +360,7 @@ class ClaudeCodeOrchestrator:
             permission_mode="acceptEdits",
             max_turns=MAX_ORCHESTRATOR_TURNS,
             include_partial_messages=True,
+            **({"add_dirs": add_dirs} if add_dirs else {}),
         )
         if self.model:
             options.model = self.model

@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["api", "claude-code"],
+        choices=["api", "claude-code", "langgraph"],
         default="api",
         help="Backend to use (default: api)",
     )
@@ -44,10 +44,36 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Enable verbose logging",
     )
+    # LangGraph-specific arguments
+    parser.add_argument(
+        "--checkpoint-backend",
+        choices=["sqlite", "memory"],
+        default="sqlite",
+        help="Checkpoint backend for langgraph (default: sqlite)",
+    )
+    parser.add_argument(
+        "--approval-policy",
+        choices=["none", "default", "strict"],
+        default="none",
+        help="HITL approval policy for langgraph (default: none)",
+    )
+    parser.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Shorthand for --approval-policy none",
+    )
+    parser.add_argument(
+        "--thread-id",
+        default=None,
+        help="Thread ID to resume a langgraph run",
+    )
 
     args = parser.parse_args(argv)
 
-    if args.backend == "api" and not os.environ.get("ANTHROPIC_API_KEY"):
+    if args.no_approve:
+        args.approval_policy = "none"
+
+    if args.backend in ("api", "langgraph") and not os.environ.get("ANTHROPIC_API_KEY"):
         print(
             "Error: ANTHROPIC_API_KEY environment variable is not set.\n"
             "Get your API key at https://console.anthropic.com/settings/keys\n"
@@ -78,8 +104,24 @@ def main(argv: list[str] | None = None) -> None:
                 workspace=workspace,
                 model=args.model,
                 verbose=args.verbose,
+                invocation_dir=Path.cwd(),
             )
             result = asyncio.run(orchestrator.run(args.task))
+        elif args.backend == "langgraph":
+            from agenticflow.langgraph_orchestrator import LangGraphOrchestrator
+
+            model = args.model or "claude-sonnet-4-5-20250929"
+            lg_orchestrator = LangGraphOrchestrator(
+                workspace=workspace,
+                model=model,
+                checkpoint_backend=args.checkpoint_backend,
+                approval_policy=args.approval_policy,
+                verbose=args.verbose,
+            )
+            if args.thread_id:
+                result = lg_orchestrator.resume(args.thread_id)
+            else:
+                result = lg_orchestrator.run(args.task, thread_id=args.thread_id)
         else:
             model = args.model or "claude-sonnet-4-5-20250929"
             orchestrator = Orchestrator(

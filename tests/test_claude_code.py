@@ -237,6 +237,61 @@ class TestRunAgent:
         assert task_result.success is False
         assert "Permission denied" in task_result.summary
 
+    def test_run_agent_passes_add_dirs(self, tmp_path: Path):
+        from agenticflow.claude_code import run_agent
+
+        ws = Workspace(root=tmp_path / "ws")
+
+        result_msg = _make_result_message(result="Done.")
+        mock_sdk = _build_mock_sdk([result_msg])
+
+        captured_options = []
+        original_factory = mock_sdk.ClaudeAgentOptions
+
+        def capturing_factory(**kwargs):
+            opts = original_factory(**kwargs)
+            captured_options.append(kwargs)
+            return opts
+
+        mock_sdk.ClaudeAgentOptions = capturing_factory
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            asyncio.run(
+                run_agent(
+                    AgentType.CODER,
+                    "Write code",
+                    ws,
+                    add_dirs=["/home/user/project"],
+                )
+            )
+
+        assert len(captured_options) == 1
+        assert captured_options[0]["add_dirs"] == ["/home/user/project"]
+
+    def test_run_agent_omits_add_dirs_when_none(self, tmp_path: Path):
+        from agenticflow.claude_code import run_agent
+
+        ws = Workspace(root=tmp_path / "ws")
+
+        result_msg = _make_result_message(result="Done.")
+        mock_sdk = _build_mock_sdk([result_msg])
+
+        captured_options = []
+        original_factory = mock_sdk.ClaudeAgentOptions
+
+        def capturing_factory(**kwargs):
+            opts = original_factory(**kwargs)
+            captured_options.append(kwargs)
+            return opts
+
+        mock_sdk.ClaudeAgentOptions = capturing_factory
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            asyncio.run(run_agent(AgentType.CODER, "Write code", ws))
+
+        assert len(captured_options) == 1
+        assert "add_dirs" not in captured_options[0]
+
 
 # ---------------------------------------------------------------------------
 # Tests for ClaudeCodeOrchestrator
@@ -330,6 +385,85 @@ class TestClaudeCodeOrchestrator:
             result = orch.run_sync("Quick task")
 
         assert result == "Sync result."
+
+    def test_orchestrator_passes_add_dirs_with_invocation_dir(self, tmp_path: Path):
+        from agenticflow.claude_code import ClaudeCodeOrchestrator
+
+        ws = Workspace(root=tmp_path / "ws")
+        inv_dir = tmp_path / "project"
+        inv_dir.mkdir()
+
+        result_msg = _make_result_message(result="Done.")
+        mock_sdk = _build_mock_sdk([result_msg])
+
+        captured_options = []
+        original_factory = mock_sdk.ClaudeAgentOptions
+
+        def capturing_factory(**kwargs):
+            opts = original_factory(**kwargs)
+            captured_options.append(kwargs)
+            return opts
+
+        mock_sdk.ClaudeAgentOptions = capturing_factory
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            orch = ClaudeCodeOrchestrator(workspace=ws, invocation_dir=inv_dir)
+            asyncio.run(orch.run("Build something"))
+
+        assert len(captured_options) == 1
+        assert captured_options[0]["add_dirs"] == [str(inv_dir.resolve())]
+
+    def test_orchestrator_no_add_dirs_when_same_as_workspace(self, tmp_path: Path):
+        from agenticflow.claude_code import ClaudeCodeOrchestrator
+
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        ws = Workspace(root=ws_dir)
+
+        result_msg = _make_result_message(result="Done.")
+        mock_sdk = _build_mock_sdk([result_msg])
+
+        captured_options = []
+        original_factory = mock_sdk.ClaudeAgentOptions
+
+        def capturing_factory(**kwargs):
+            opts = original_factory(**kwargs)
+            captured_options.append(kwargs)
+            return opts
+
+        mock_sdk.ClaudeAgentOptions = capturing_factory
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            orch = ClaudeCodeOrchestrator(workspace=ws, invocation_dir=ws_dir)
+            asyncio.run(orch.run("Build something"))
+
+        assert len(captured_options) == 1
+        assert "add_dirs" not in captured_options[0]
+
+    def test_orchestrator_no_add_dirs_without_invocation_dir(self, tmp_path: Path):
+        from agenticflow.claude_code import ClaudeCodeOrchestrator
+
+        ws = Workspace(root=tmp_path / "ws")
+
+        result_msg = _make_result_message(result="Done.")
+        mock_sdk = _build_mock_sdk([result_msg])
+
+        captured_options = []
+        original_factory = mock_sdk.ClaudeAgentOptions
+
+        def capturing_factory(**kwargs):
+            opts = original_factory(**kwargs)
+            captured_options.append(kwargs)
+            return opts
+
+        mock_sdk.ClaudeAgentOptions = capturing_factory
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            orch = ClaudeCodeOrchestrator(workspace=ws)
+            asyncio.run(orch.run("Build something"))
+
+        assert len(captured_options) == 1
+        assert "add_dirs" not in captured_options[0]
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,10 @@ dev = [
 claude-code = [
     "claude-agent-sdk>=0.1.0",
 ]
+langgraph = [
+    "langgraph>=1.0.8",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+]
 
 [project.scripts]
 agenticflow = "agenticflow.cli:main"

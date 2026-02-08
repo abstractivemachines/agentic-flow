@@ -47,3 +47,9 @@ AgenticFlow is a multi-agent orchestration system where Claude acts as both the 
 ## Test Patterns
 
 Tests mock `agent.client` or `orchestrator.client` with `MagicMock`. Multi-turn agent interactions use `side_effect` lists on `client.messages.create`. Use `tmp_path` fixture for temporary workspaces. See `tests/test_orchestrator.py` for the mock response helper pattern.
+
+## Post-Change Checklist
+
+After implementing any feature, fix, or refactor, always consider updating:
+- **README.md** — CLI flags, Python API examples, architecture diagram, setup instructions
+- **CLAUDE.md** — Architecture descriptions, code conventions, test patterns

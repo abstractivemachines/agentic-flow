@@ -13,3 +13,12 @@ __all__ = [
     "TaskResult",
     "Workspace",
 ]
+
+try:
+    from agenticflow.langgraph_orchestrator import (  # noqa: F401
+        LangGraphOrchestrator,
+    )
+
+    __all__.append("LangGraphOrchestrator")
+except ImportError:
+    pass

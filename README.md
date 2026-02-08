@@ -17,6 +17,7 @@ User Request
       │
       ├─── Backend: api ──────── Direct Anthropic API calls (ANTHROPIC_API_KEY)
       ├─── Backend: claude-code ─ Claude Code CLI via claude-agent-sdk (no key needed)
+      ├─── Backend: langgraph ── LangGraph with checkpointing, HITL, Studio debugging
       │
       ▼
 ┌──────────┬──────────┬──────────┐
@@ -47,8 +48,8 @@ User Request
 git clone https://github.com/abstractivemachines/agentic-flow.git
 cd agentic-flow
 
-# Install
-pip install -e ".[dev,claude-code]"
+# Install (pick the backends you need)
+pip install -e ".[dev,claude-code,langgraph]"
 
 # Set your API key (only needed for the api backend)
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -68,6 +69,15 @@ agenticflow "Build a REST API with Flask" --model claude-sonnet-4-5-20250929 --w
 # Use Claude Code backend (no API key needed — authenticates via Claude Code CLI)
 agenticflow "Build a REST API with Flask" --backend claude-code
 
+# Use LangGraph backend with checkpointing and no approval gates
+agenticflow "Build a REST API with Flask" --backend langgraph --no-approve
+
+# LangGraph with human-in-the-loop approval (gates all agents)
+agenticflow "Build a REST API with Flask" --backend langgraph --approval-policy strict
+
+# Resume an interrupted LangGraph run
+agenticflow "ignored" --backend langgraph --thread-id abc123
+
 # Verbose mode
 agenticflow "Refactor the auth module" -v
 ```
@@ -75,10 +85,14 @@ agenticflow "Refactor the auth module" -v
 | Flag | Description | Default |
 |------|-------------|---------|
 | `task` | Task description (positional) | — |
-| `--backend` | `api` or `claude-code` | `api` |
+| `--backend` | `api`, `claude-code`, or `langgraph` | `api` |
 | `--model` | Claude model ID | `claude-sonnet-4-5-20250929` |
 | `--workspace` | Working directory for agents | `./workspace` |
 | `-v, --verbose` | Enable verbose logging | off |
+| `--checkpoint-backend` | Checkpoint store for langgraph (`sqlite`, `memory`) | `sqlite` |
+| `--approval-policy` | HITL approval policy for langgraph (`none`, `default`, `strict`) | `none` |
+| `--no-approve` | Shorthand for `--approval-policy none` | — |
+| `--thread-id` | Thread ID to resume a langgraph run | — |
 
 ### Python API
 
@@ -170,6 +184,52 @@ async for event in orchestrator.run_stream("Build a web scraper"):
     if event.kind == "text":
         print(event.data, end="", flush=True)
 ```
+
+### LangGraph Backend
+
+The `langgraph` backend wraps the same agents in a [LangGraph](https://langchain-ai.github.io/langgraph/) `StateGraph`, adding checkpointing, human-in-the-loop approval gates, and LangGraph Studio visual debugging. Requires `ANTHROPIC_API_KEY`.
+
+```python
+from pathlib import Path
+from agenticflow.langgraph_orchestrator import LangGraphOrchestrator
+from agenticflow.models import Workspace
+
+workspace = Workspace(root=Path("./my-project"))
+orchestrator = LangGraphOrchestrator(
+    workspace=workspace,
+    checkpoint_backend="sqlite",   # or "memory" for tests
+    approval_policy="default",     # gates coder agents; "strict" gates all, "none" gates nothing
+    verbose=True,
+)
+result = orchestrator.run("Build a REST API", thread_id="my-thread")
+print(result)
+```
+
+**Checkpointing** — State is persisted between nodes (SQLite by default at `{workspace}/.agenticflow/checkpoints.db`). If the process dies, resume from the last checkpoint:
+
+```python
+result = orchestrator.resume("my-thread")
+```
+
+**Human-in-the-loop** — When the approval policy gates an agent, the graph interrupts and waits. In the CLI this is an interactive prompt; programmatically use `resume()`:
+
+```python
+result = orchestrator.resume(
+    "my-thread",
+    approval_decision="approve",    # or "reject"
+    approval_feedback="Looks good",
+)
+```
+
+**Streaming:**
+
+```python
+for event in orchestrator.run_stream("Build a web scraper"):
+    if event.kind == "done":
+        print(event.data)
+```
+
+**LangGraph Studio** — A `langgraph.json` is included at the project root. Point LangGraph Studio at this directory to visually debug the orchestrator graph.
 
 ## Development
 
