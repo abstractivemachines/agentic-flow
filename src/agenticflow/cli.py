@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
@@ -22,9 +23,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Description of the task to perform",
     )
     parser.add_argument(
+        "--backend",
+        choices=["api", "claude-code"],
+        default="api",
+        help="Backend to use (default: api)",
+    )
+    parser.add_argument(
         "--model",
-        default="claude-sonnet-4-5-20250929",
-        help="Claude model to use (default: claude-sonnet-4-5-20250929)",
+        default=None,
+        help="Claude model to use (default: claude-sonnet-4-5-20250929 for api backend)",
     )
     parser.add_argument(
         "--workspace",
@@ -32,14 +39,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Workspace directory (default: ./workspace)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )
 
     args = parser.parse_args(argv)
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if args.backend == "api" and not os.environ.get("ANTHROPIC_API_KEY"):
         print(
             "Error: ANTHROPIC_API_KEY environment variable is not set.\n"
             "Get your API key at https://console.anthropic.com/settings/keys\n"
@@ -55,18 +63,32 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     workspace = Workspace(root=Path(args.workspace))
-    orchestrator = Orchestrator(
-        workspace=workspace,
-        model=args.model,
-        verbose=args.verbose,
-    )
 
-    print(f"AgenticFlow — workspace: {workspace.root.resolve()}")
+    print(
+        f"AgenticFlow — backend: {args.backend}, workspace: {workspace.root.resolve()}"
+    )
     print(f"Task: {args.task}")
     print("-" * 60)
 
     try:
-        result = orchestrator.run(args.task)
+        if args.backend == "claude-code":
+            from agenticflow.claude_code import ClaudeCodeOrchestrator
+
+            orchestrator = ClaudeCodeOrchestrator(
+                workspace=workspace,
+                model=args.model,
+                verbose=args.verbose,
+            )
+            result = asyncio.run(orchestrator.run(args.task))
+        else:
+            model = args.model or "claude-sonnet-4-5-20250929"
+            orchestrator = Orchestrator(
+                workspace=workspace,
+                model=model,
+                verbose=args.verbose,
+            )
+            result = orchestrator.run(args.task)
+
         print("\n" + "=" * 60)
         print("RESULT:")
         print("=" * 60)

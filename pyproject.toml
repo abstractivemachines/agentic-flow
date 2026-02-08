@@ -17,6 +17,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",
 ]
+claude-code = [
+    "claude-agent-sdk>=0.1.0",
+]
 
 [project.scripts]
 agenticflow = "agenticflow.cli:main"
