@@ -37,7 +37,7 @@ class ReadFileTool(Tool):
 
     def _resolve(self, path: str) -> Path:
         resolved = (self._workspace_root / path).resolve()
-        if not str(resolved).startswith(str(self._workspace_root)):
+        if not resolved.is_relative_to(self._workspace_root):
             raise ValueError(f"Path traversal detected: {path}")
         return resolved
 
@@ -86,7 +86,7 @@ class WriteFileTool(Tool):
 
     def _resolve(self, path: str) -> Path:
         resolved = (self._workspace_root / path).resolve()
-        if not str(resolved).startswith(str(self._workspace_root)):
+        if not resolved.is_relative_to(self._workspace_root):
             raise ValueError(f"Path traversal detected: {path}")
         return resolved
 
@@ -131,7 +131,7 @@ class ListDirectoryTool(Tool):
 
     def _resolve(self, path: str) -> Path:
         resolved = (self._workspace_root / path).resolve()
-        if not str(resolved).startswith(str(self._workspace_root)):
+        if not resolved.is_relative_to(self._workspace_root):
             raise ValueError(f"Path traversal detected: {path}")
         return resolved
 

@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from agenticflow.models import Workspace
@@ -20,7 +21,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "task",
-        help="Description of the task to perform",
+        nargs="?",
+        default=None,
+        help="Description of the task to perform (optional when resuming with --backend langgraph --thread-id)",
     )
     parser.add_argument(
         "--backend",
@@ -65,13 +68,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--thread-id",
         default=None,
-        help="Thread ID to resume a langgraph run",
+        help="Thread ID for langgraph (used for resume; can also be provided for new runs)",
     )
 
     args = parser.parse_args(argv)
 
     if args.no_approve:
         args.approval_policy = "none"
+
+    if args.task is None and not (args.backend == "langgraph" and args.thread_id):
+        parser.error(
+            "task is required unless resuming a langgraph run with --backend langgraph --thread-id"
+        )
 
     if args.backend in ("api", "langgraph") and not os.environ.get("ANTHROPIC_API_KEY"):
         print(
@@ -93,13 +101,17 @@ def main(argv: list[str] | None = None) -> None:
     print(
         f"AgenticFlow — backend: {args.backend}, workspace: {workspace.root.resolve()}"
     )
-    print(f"Task: {args.task}")
+    if args.task is not None:
+        print(f"Task: {args.task}")
+    elif args.thread_id:
+        print(f"Resuming thread: {args.thread_id}")
     print("-" * 60)
 
     try:
         if args.backend == "claude-code":
             from agenticflow.claude_code import ClaudeCodeOrchestrator
 
+            assert args.task is not None
             orchestrator = ClaudeCodeOrchestrator(
                 workspace=workspace,
                 model=args.model,
@@ -118,10 +130,16 @@ def main(argv: list[str] | None = None) -> None:
                 approval_policy=args.approval_policy,
                 verbose=args.verbose,
             )
-            if args.thread_id:
+            if args.task is None:
+                if args.thread_id is None:
+                    parser.error(
+                        "--thread-id is required when resuming a langgraph run without a task"
+                    )
                 result = lg_orchestrator.resume(args.thread_id)
             else:
-                result = lg_orchestrator.run(args.task, thread_id=args.thread_id)
+                run_thread_id = args.thread_id or uuid.uuid4().hex[:12]
+                print(f"Thread ID: {run_thread_id}")
+                result = lg_orchestrator.run(args.task, thread_id=run_thread_id)
         else:
             model = args.model or "claude-sonnet-4-5-20250929"
             orchestrator = Orchestrator(
@@ -129,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
                 model=model,
                 verbose=args.verbose,
             )
+            assert args.task is not None
             result = orchestrator.run(args.task)
 
         print("\n" + "=" * 60)

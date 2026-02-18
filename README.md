@@ -36,10 +36,10 @@ User Request
 
 | Agent    | Role                           | Tools                              |
 |----------|--------------------------------|------------------------------------|
-| Planner  | Architecture & design          | read_file, list_dir, web_search, http |
-| Coder    | Write & modify code            | read_file, write_file, list_dir, run_command, git, shell |
-| Reviewer | Code review & quality checks   | read_file, list_dir, run_command   |
-| Tester   | Write & run tests              | read_file, write_file, list_dir, run_command |
+| Planner  | Architecture & design          | read_file, list_directory, web_search, http_request |
+| Coder    | Write & modify code            | read_file, write_file, list_directory, run_command, git, shell |
+| Reviewer | Code review & quality checks   | read_file, list_directory, run_command   |
+| Tester   | Write & run tests              | read_file, write_file, list_directory, run_command |
 
 ## Setup
 
@@ -76,7 +76,7 @@ agenticflow "Build a REST API with Flask" --backend langgraph --no-approve
 agenticflow "Build a REST API with Flask" --backend langgraph --approval-policy strict
 
 # Resume an interrupted LangGraph run
-agenticflow "ignored" --backend langgraph --thread-id abc123
+agenticflow --backend langgraph --thread-id abc123
 
 # Verbose mode
 agenticflow "Refactor the auth module" -v
@@ -84,7 +84,7 @@ agenticflow "Refactor the auth module" -v
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `task` | Task description (positional) | — |
+| `task` | Task description (positional; optional only for `--backend langgraph --thread-id`) | — |
 | `--backend` | `api`, `claude-code`, or `langgraph` | `api` |
 | `--model` | Claude model ID | `claude-sonnet-4-5-20250929` |
 | `--workspace` | Working directory for agents | `./workspace` |

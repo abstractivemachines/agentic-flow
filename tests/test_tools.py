@@ -34,6 +34,11 @@ class TestReadFileTool:
         result = tool.execute(path="../../etc/passwd")
         assert result.is_error
 
+    def test_sibling_prefix_traversal_blocked(self, tmp_path: Path):
+        tool = ReadFileTool(tmp_path / "ws")
+        result = tool.execute(path="../ws2/secret.txt")
+        assert result.is_error
+
     def test_to_anthropic_dict(self, tmp_path: Path):
         tool = ReadFileTool(tmp_path)
         d = tool.to_anthropic_dict()
@@ -60,6 +65,11 @@ class TestWriteFileTool:
         result = tool.execute(path="../../evil.txt", content="bad")
         assert result.is_error
 
+    def test_sibling_prefix_traversal_blocked(self, tmp_path: Path):
+        tool = WriteFileTool(tmp_path / "ws")
+        result = tool.execute(path="../ws2/evil.txt", content="bad")
+        assert result.is_error
+
 
 class TestListDirectoryTool:
     def test_list_root(self, tmp_path: Path):
@@ -79,6 +89,11 @@ class TestListDirectoryTool:
     def test_list_missing(self, tmp_path: Path):
         tool = ListDirectoryTool(tmp_path)
         result = tool.execute(path="nope")
+        assert result.is_error
+
+    def test_list_sibling_prefix_traversal_blocked(self, tmp_path: Path):
+        tool = ListDirectoryTool(tmp_path / "ws")
+        result = tool.execute(path="../ws2")
         assert result.is_error
 
 

@@ -122,7 +122,8 @@ class Workspace:
     def resolve(self, relative_path: str) -> Path:
         """Resolve a relative path within the workspace, preventing traversal."""
         resolved = (self.root / relative_path).resolve()
-        if not str(resolved).startswith(str(self.root.resolve())):
+        workspace_root = self.root.resolve()
+        if not resolved.is_relative_to(workspace_root):
             raise ValueError(f"Path traversal detected: {relative_path}")
         return resolved
 

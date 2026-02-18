@@ -150,9 +150,7 @@ class Orchestrator:
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == "end_turn":
-                text_parts = [
-                    block.text for block in response.content if hasattr(block, "text")
-                ]
+                text_parts = self._extract_text(response.content)
                 return "\n".join(text_parts) if text_parts else "Done."
 
             tool_results = self._process_tool_calls(response.content)
@@ -196,10 +194,12 @@ class Orchestrator:
             messages.append({"role": "assistant", "content": collected_content})
 
             if stop_reason == "end_turn":
-                yield StreamEvent(kind="done", data="")
+                text_parts = self._extract_text(collected_content)
+                summary = "\n".join(text_parts) if text_parts else "Done."
+                yield StreamEvent(kind="done", data=summary)
                 return
 
-            tool_results = self._process_tool_calls(collected_content, stream_events=True)
+            tool_results = self._process_tool_calls(collected_content)
             for tr in tool_results:
                 if not tr.get("is_error"):
                     yield StreamEvent(kind="agent_result", data=tr["content"])
@@ -207,9 +207,7 @@ class Orchestrator:
 
         yield StreamEvent(kind="error", data="Orchestrator reached maximum turns.")
 
-    def _process_tool_calls(
-        self, content: list[Any], stream_events: bool = False
-    ) -> list[dict[str, Any]]:
+    def _process_tool_calls(self, content: list[Any]) -> list[dict[str, Any]]:
         """Process tool_use blocks and return tool_result dicts."""
         tool_results = []
         for block in content:
@@ -217,21 +215,40 @@ class Orchestrator:
                 continue
 
             if block.name == "dispatch_agent":
-                result = self._dispatch(block.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result,
-                })
+                try:
+                    result = self._dispatch(block.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+                except Exception as exc:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"dispatch_agent failed: {exc}",
+                        "is_error": True,
+                    })
             elif block.name == "set_shared_context":
-                key = block.input.get("key", "")
-                value = block.input.get("value", "")
-                self.workspace.shared_context.set(key, value)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": f"Stored context key '{key}'.",
-                })
+                try:
+                    raw_input = block.input if isinstance(block.input, dict) else {}
+                    key = raw_input.get("key", "")
+                    value = raw_input.get("value", "")
+                    if not isinstance(key, str) or not isinstance(value, str):
+                        raise ValueError("set_shared_context requires string key/value")
+                    self.workspace.shared_context.set(key, value)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Stored context key '{key}'.",
+                    })
+                except Exception as exc:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"set_shared_context failed: {exc}",
+                        "is_error": True,
+                    })
             else:
                 tool_results.append({
                     "type": "tool_result",
@@ -241,10 +258,21 @@ class Orchestrator:
                 })
         return tool_results
 
+    @staticmethod
+    def _extract_text(content: list[Any]) -> list[str]:
+        return [block.text for block in content if hasattr(block, "text")]
+
     def _dispatch(self, tool_input: dict[str, Any]) -> str:
         """Create and run a specialist agent, returning the result as a string."""
-        agent_type_str = tool_input["agent_type"]
-        task_description = tool_input["task_description"]
+        if not isinstance(tool_input, dict):
+            raise ValueError("dispatch_agent input must be an object")
+
+        agent_type_str = tool_input.get("agent_type")
+        task_description = tool_input.get("task_description")
+        if not isinstance(agent_type_str, str):
+            raise ValueError("dispatch_agent requires string 'agent_type'")
+        if not isinstance(task_description, str) or not task_description.strip():
+            raise ValueError("dispatch_agent requires non-empty 'task_description'")
 
         agent_type = AgentType(agent_type_str)
         agent_cls = AGENT_CLASSES[agent_type]

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from agenticflow.models import AgentType, Task, TaskResult, TaskStatus, Workspace
 
 
@@ -67,6 +69,11 @@ class TestWorkspace:
             assert False, "Should have raised ValueError"
         except ValueError:
             pass
+
+    def test_resolve_sibling_prefix_traversal(self, tmp_path: Path):
+        ws = Workspace(root=tmp_path / "ws")
+        with pytest.raises(ValueError):
+            ws.resolve("../ws2/secrets.txt")
 
     def test_results_tracking(self, tmp_path: Path):
         ws = Workspace(root=tmp_path)

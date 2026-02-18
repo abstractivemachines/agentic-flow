@@ -349,7 +349,33 @@ class TestClaudeCodeOrchestrator:
             events = asyncio.run(collect_events())
 
         assert any(e.kind == "text" for e in events)
-        assert any(e.kind == "done" for e in events)
+        done_events = [e for e in events if e.kind == "done"]
+        assert len(done_events) == 1
+        assert done_events[0].data == "Final."
+
+    def test_orchestrator_run_stream_done_falls_back_to_text(self, tmp_path: Path):
+        from agenticflow.claude_code import ClaudeCodeOrchestrator
+
+        ws = Workspace(root=tmp_path / "ws")
+
+        assistant_msg = _make_assistant_message("Streaming text.")
+        result_msg = _make_result_message(result=None)
+        mock_sdk = _build_mock_sdk([assistant_msg, result_msg])
+
+        with patch("agenticflow.claude_code._import_sdk", return_value=mock_sdk):
+            orch = ClaudeCodeOrchestrator(workspace=ws)
+
+            async def collect_events():
+                events = []
+                async for event in orch.run_stream("Do something"):
+                    events.append(event)
+                return events
+
+            events = asyncio.run(collect_events())
+
+        done_events = [e for e in events if e.kind == "done"]
+        assert len(done_events) == 1
+        assert "Streaming text." in done_events[0].data
 
     def test_orchestrator_run_stream_error(self, tmp_path: Path):
         from agenticflow.claude_code import ClaudeCodeOrchestrator

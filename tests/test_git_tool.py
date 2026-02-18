@@ -29,6 +29,12 @@ class TestGitTool:
         assert result.is_error
         assert "not allowed" in result.output
 
+    def test_injection_like_args_are_blocked(self, tmp_path: Path):
+        tool = GitTool(tmp_path)
+        result = tool.execute(args="status; echo pwned")
+        assert result.is_error
+        assert "not allowed" in result.output
+
     def test_empty_args(self, tmp_path: Path):
         tool = GitTool(tmp_path)
         result = tool.execute(args="")

@@ -49,7 +49,7 @@ _WORKSPACE_REGISTRY: dict[str, Workspace] = {}
 
 
 def _register_workspace(workspace: Workspace) -> str:
-    key = str(workspace.root.resolve())
+    key = f"{workspace.root.resolve()}::{uuid.uuid4().hex}"
     _WORKSPACE_REGISTRY[key] = workspace
     return key
 
@@ -60,6 +60,67 @@ def _get_workspace(config: Any) -> Workspace:
     if ws is None:
         raise RuntimeError(f"Workspace not found in registry for key: {key}")
     return ws
+
+
+def _validate_plan(plan: Any) -> list[dict[str, str]]:
+    """Validate and normalize a planner-produced plan."""
+    if not isinstance(plan, list):
+        raise ValueError("Plan must be a JSON array")
+    if not plan:
+        raise ValueError("Plan must contain at least one step")
+
+    valid_agent_types = {agent.value for agent in AgentType}
+    normalized: list[dict[str, str]] = []
+    for i, step in enumerate(plan, start=1):
+        if not isinstance(step, dict):
+            raise ValueError(f"Step {i} must be an object")
+
+        agent_type = step.get("agent_type")
+        if agent_type not in valid_agent_types:
+            raise ValueError(
+                f"Step {i} has invalid agent_type '{agent_type}'. "
+                f"Expected one of: {', '.join(sorted(valid_agent_types))}"
+            )
+
+        task_description = step.get("task_description")
+        if not isinstance(task_description, str) or not task_description.strip():
+            raise ValueError(f"Step {i} must include a non-empty task_description")
+
+        normalized.append(
+            {
+                "agent_type": agent_type,
+                "task_description": task_description.strip(),
+            }
+        )
+    return normalized
+
+
+def _interrupt_message_from_event(event: dict[str, Any]) -> str | None:
+    """Extract a human-readable interrupt message from a stream event."""
+    payload: Any = None
+    if "__interrupt__" in event:
+        payload = event["__interrupt__"]
+    else:
+        for key, value in event.items():
+            if key.startswith("__interrupt__"):
+                payload = value
+                break
+
+    if payload is None:
+        return None
+
+    first: Any = payload
+    if isinstance(payload, (list, tuple)) and payload:
+        first = payload[0]
+    if isinstance(first, dict) and "value" in first:
+        first = first["value"]
+    else:
+        first = getattr(first, "value", first)
+    if isinstance(first, dict):
+        question = first.get("question")
+        if isinstance(question, str) and question.strip():
+            return f"Waiting for approval: {question.strip()}"
+    return "Waiting for approval..."
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +208,7 @@ def plan_node(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any
             text += block.text
 
     try:
-        plan = json.loads(text)
-        if not isinstance(plan, list):
-            raise ValueError("Plan must be a JSON array")
+        plan = _validate_plan(json.loads(text))
     except (json.JSONDecodeError, ValueError) as exc:
         return {
             "error": f"Failed to parse plan: {exc}\nRaw output: {text[:500]}",
@@ -221,16 +280,44 @@ def execute_agent_node(
 
     plan = state.get("plan", [])
     idx = state.get("current_step_index", 0)
-    step = plan[idx]
+    if idx >= len(plan):
+        return {
+            "error": f"Plan step index out of range: {idx}",
+            "is_complete": True,
+        }
 
-    agent_type = AgentType(step["agent_type"])
+    step = plan[idx]
+    if not isinstance(step, dict):
+        return {"error": f"Invalid plan step at index {idx}", "is_complete": True}
+
+    agent_type_str = step.get("agent_type")
+    task_desc_raw = step.get("task_description")
+    if not isinstance(agent_type_str, str):
+        return {
+            "error": f"Plan step {idx} missing string agent_type",
+            "is_complete": True,
+        }
+    if not isinstance(task_desc_raw, str) or not task_desc_raw.strip():
+        return {
+            "error": f"Plan step {idx} missing non-empty task_description",
+            "is_complete": True,
+        }
+
+    try:
+        agent_type = AgentType(agent_type_str)
+    except ValueError:
+        return {
+            "error": f"Unsupported agent type in plan: {agent_type_str}",
+            "is_complete": True,
+        }
+
     agent_cls = AGENT_CLASSES[agent_type]
 
     agent = agent_cls(workspace=workspace, model=model, verbose=verbose)
 
     # Include shared context in the task description
     shared_ctx = state.get("shared_context", {})
-    task_desc = step["task_description"]
+    task_desc = task_desc_raw.strip()
     if shared_ctx:
         ctx_lines = ["Previous context:"]
         for k, v in shared_ctx.items():
@@ -268,6 +355,9 @@ def evaluate_node(state: OrchestratorState) -> dict[str, Any]:
 
     if not results:
         return {"is_complete": True, "error": "No results to evaluate"}
+
+    if idx >= len(plan):
+        return {"is_complete": True}
 
     latest = results[-1]
 
@@ -383,6 +473,11 @@ def route_after_plan(state: OrchestratorState) -> str:
 
 def route_after_approval(state: OrchestratorState) -> str:
     """Route based on approval decision."""
+    plan = state.get("plan", [])
+    idx = state.get("current_step_index", 0)
+    if idx >= len(plan):
+        return "finalize"
+
     decision = state.get("approval_decision", "approve")
     if decision == "reject":
         return "finalize"
@@ -471,6 +566,8 @@ class LangGraphOrchestrator:
         self.approval_policy = approval_policy
         self.verbose = verbose
         self._workspace_key = _register_workspace(workspace)
+        self._sqlite_conn: Any | None = None
+        self._closed = False
 
         self._checkpointer = self._create_checkpointer(checkpoint_backend)
         self._graph = build_graph().compile(checkpointer=self._checkpointer)
@@ -489,6 +586,7 @@ class LangGraphOrchestrator:
             db_dir.mkdir(parents=True, exist_ok=True)
             db_path = db_dir / "checkpoints.db"
             conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            self._sqlite_conn = conn
             return SqliteSaver(conn)
         else:
             raise ValueError(f"Unknown checkpoint backend: {backend}")
@@ -599,6 +697,11 @@ class LangGraphOrchestrator:
 
         prev_results_count = 0
         for event in self._graph.stream(initial_state, config, stream_mode="updates"):
+            interrupt_msg = _interrupt_message_from_event(event)
+            if interrupt_msg is not None:
+                yield StreamEvent(kind="text", data=interrupt_msg)
+                continue
+
             for node_name, updates in event.items():
                 if node_name == "plan":
                     plan = updates.get("plan", [])
@@ -606,12 +709,6 @@ class LangGraphOrchestrator:
                         kind="text",
                         data=f"Plan created with {len(plan)} steps.",
                     )
-                elif node_name == "should_approve":
-                    if updates.get("pending_approval"):
-                        yield StreamEvent(
-                            kind="text",
-                            data="Waiting for approval...",
-                        )
                 elif node_name == "execute_agent":
                     results = updates.get("agent_results", [])
                     for r in results[prev_results_count:]:
@@ -655,6 +752,30 @@ class LangGraphOrchestrator:
         """Introspect the current state for a thread."""
         config = self._make_config(thread_id)
         return self._graph.get_state(config)
+
+    def close(self) -> None:
+        """Release resources held by this orchestrator instance."""
+        if self._closed:
+            return
+
+        _WORKSPACE_REGISTRY.pop(self._workspace_key, None)
+        if self._sqlite_conn is not None:
+            self._sqlite_conn.close()
+            self._sqlite_conn = None
+        self._closed = True
+
+    def __enter__(self) -> LangGraphOrchestrator:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Best-effort cleanup during interpreter shutdown.
+            pass
 
 
 # ---------------------------------------------------------------------------

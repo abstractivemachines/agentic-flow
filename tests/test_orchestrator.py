@@ -27,6 +27,23 @@ def _make_response(
     return SimpleNamespace(content=content, stop_reason=stop_reason)
 
 
+class _FakeStream:
+    def __init__(self, final_message: Any):
+        self._final_message = final_message
+
+    def __enter__(self) -> _FakeStream:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+    def __iter__(self):
+        return iter([])
+
+    def get_final_message(self) -> Any:
+        return self._final_message
+
+
 class TestOrchestrator:
     def test_single_turn(self, tmp_path: Path):
         ws = Workspace(root=tmp_path / "ws")
@@ -104,6 +121,24 @@ class TestOrchestrator:
         result = orch.run("test")
         assert "OK" in result
 
+    def test_invalid_dispatch_input_returns_tool_error(self, tmp_path: Path):
+        ws = Workspace(root=tmp_path / "ws")
+        orch = Orchestrator(workspace=ws)
+        orch.client = MagicMock()
+
+        bad_dispatch = _make_tool_use_block("t1", "dispatch_agent", {"agent_type": "coder"})
+        first_response = _make_response([bad_dispatch], stop_reason="tool_use")
+        second_response = _make_response([_make_text_block("Recovered.")])
+
+        orch.client.messages.create.side_effect = [first_response, second_response]
+        result = orch.run("test")
+
+        assert "Recovered." in result
+        second_call_kwargs = orch.client.messages.create.call_args_list[1].kwargs
+        tool_result_msg = second_call_kwargs["messages"][2]
+        assert tool_result_msg["content"][0]["is_error"] is True
+        assert "dispatch_agent failed" in tool_result_msg["content"][0]["content"]
+
     def test_max_turns(self, tmp_path: Path):
         ws = Workspace(root=tmp_path / "ws")
         orch = Orchestrator(workspace=ws)
@@ -121,3 +156,16 @@ class TestOrchestrator:
         with patch.object(orch, "_dispatch", return_value="[SUCCESS] done"):
             result = orch.run("loop forever")
         assert "maximum turns" in result.lower()
+
+    def test_run_stream_done_contains_summary(self, tmp_path: Path):
+        ws = Workspace(root=tmp_path / "ws")
+        orch = Orchestrator(workspace=ws)
+        orch.client = MagicMock()
+
+        final_message = _make_response([_make_text_block("Final streamed summary.")])
+        orch.client.messages.stream.return_value = _FakeStream(final_message)
+
+        events = list(orch.run_stream("Do something"))
+        done_events = [e for e in events if e.kind == "done"]
+        assert len(done_events) == 1
+        assert done_events[0].data == "Final streamed summary."

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,15 @@ class GitTool(Tool):
         if not args:
             return ToolResult(output="No git arguments provided.", is_error=True)
 
-        subcommand = args.split()[0]
+        try:
+            argv = shlex.split(args)
+        except ValueError as exc:
+            return ToolResult(output=f"Invalid git arguments: {exc}", is_error=True)
+
+        if not argv:
+            return ToolResult(output="No git arguments provided.", is_error=True)
+
+        subcommand = argv[0]
         if subcommand not in ALLOWED_SUBCOMMANDS:
             return ToolResult(
                 output=f"Git subcommand '{subcommand}' is not allowed. "
@@ -64,11 +73,9 @@ class GitTool(Tool):
                 is_error=True,
             )
 
-        full_command = f"git {args}"
         try:
             result = subprocess.run(
-                full_command,
-                shell=True,
+                ["git", *argv],
                 cwd=self._workspace_root,
                 capture_output=True,
                 text=True,

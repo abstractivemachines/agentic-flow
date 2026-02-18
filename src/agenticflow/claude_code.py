@@ -334,6 +334,7 @@ class ClaudeCodeOrchestrator:
         """Run the orchestrator loop, yielding StreamEvents as work progresses."""
         sdk = _import_sdk()
         add_dirs = self._build_add_dirs()
+        text_chunks: list[str] = []
 
         server = _build_orchestrator_mcp_server(
             self.workspace,
@@ -374,10 +375,13 @@ class ClaudeCodeOrchestrator:
                     if event.get("type") == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
-                            yield StreamEvent(kind="text", data=delta.get("text", ""))
+                            text = delta.get("text", "")
+                            text_chunks.append(text)
+                            yield StreamEvent(kind="text", data=text)
                 elif isinstance(message, sdk.AssistantMessage):
                     for block in message.content:
                         if isinstance(block, sdk.TextBlock):
+                            text_chunks.append(block.text)
                             yield StreamEvent(kind="text", data=block.text)
                 elif isinstance(message, sdk.ResultMessage):
                     if message.is_error:
@@ -386,7 +390,8 @@ class ClaudeCodeOrchestrator:
                             data=message.result or "Orchestrator error.",
                         )
                     else:
-                        yield StreamEvent(kind="done", data="")
+                        summary = message.result or "".join(text_chunks).strip() or "Done."
+                        yield StreamEvent(kind="done", data=summary)
                     return
         except Exception as exc:
             yield StreamEvent(kind="error", data=str(exc))

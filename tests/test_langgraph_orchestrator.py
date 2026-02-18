@@ -18,6 +18,8 @@ from langgraph.types import Command  # noqa: E402
 from agenticflow.langgraph_orchestrator import (  # noqa: E402
     APPROVAL_POLICIES,
     LangGraphOrchestrator,
+    _WORKSPACE_REGISTRY,
+    _interrupt_message_from_event,
     _get_workspace,
     _register_workspace,
     build_graph,
@@ -190,6 +192,46 @@ class TestWorkspaceRegistry:
         with pytest.raises(RuntimeError, match="Workspace not found"):
             _get_workspace(config)
 
+    def test_register_same_workspace_path_gets_unique_keys(self, tmp_path: Path):
+        ws1 = Workspace(root=tmp_path / "shared")
+        ws2 = Workspace(root=tmp_path / "shared")
+
+        key1 = _register_workspace(ws1)
+        key2 = _register_workspace(ws2)
+        assert key1 != key2
+
+    def test_closing_one_orchestrator_does_not_unregister_other_same_path(
+        self, tmp_path: Path
+    ):
+        ws1 = Workspace(root=tmp_path / "shared")
+        ws2 = Workspace(root=tmp_path / "shared")
+
+        orch1 = LangGraphOrchestrator(workspace=ws1, checkpoint_backend="memory")
+        orch2 = LangGraphOrchestrator(workspace=ws2, checkpoint_backend="memory")
+
+        try:
+            orch1.close()
+            config2 = {"configurable": {"workspace_key": orch2._workspace_key}}
+            assert _get_workspace(config2) is ws2
+        finally:
+            orch2.close()
+
+
+class TestInterruptMessageHelper:
+    def test_interrupt_message_with_question(self):
+        event = {"__interrupt__": [{"value": {"question": "Approve this step?"}}]}
+        msg = _interrupt_message_from_event(event)
+        assert msg == "Waiting for approval: Approve this step?"
+
+    def test_interrupt_message_without_question(self):
+        event = {"__interrupt__": [{}]}
+        msg = _interrupt_message_from_event(event)
+        assert msg == "Waiting for approval..."
+
+    def test_interrupt_message_none_for_non_interrupt_event(self):
+        msg = _interrupt_message_from_event({"plan": {"plan": []}})
+        assert msg is None
+
 
 # ===========================================================================
 # Node unit tests
@@ -244,6 +286,37 @@ class TestPlanNode:
 
         assert "error" in result
         assert "must be a JSON array" in result["error"]
+
+    @patch("agenticflow.langgraph_orchestrator.anthropic.Anthropic")
+    def test_empty_plan_rejected(self, mock_anthropic_cls, tmp_path: Path):
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _make_response([_make_text_block("[]")])
+        mock_anthropic_cls.return_value = mock_client
+
+        state = _make_state()
+        config = _make_config(tmp_path)
+        result = plan_node(state, config)
+
+        assert "error" in result
+        assert "at least one step" in result["error"]
+        assert result["is_complete"] is True
+
+    @patch("agenticflow.langgraph_orchestrator.anthropic.Anthropic")
+    def test_invalid_agent_type_rejected(self, mock_anthropic_cls, tmp_path: Path):
+        bad_plan = [{"agent_type": "janitor", "task_description": "Clean up"}]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _make_response(
+            [_make_text_block(json.dumps(bad_plan))]
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        state = _make_state()
+        config = _make_config(tmp_path)
+        result = plan_node(state, config)
+
+        assert "error" in result
+        assert "invalid agent_type" in result["error"]
+        assert result["is_complete"] is True
 
 
 class TestShouldApproveNode:
@@ -321,6 +394,14 @@ class TestExecuteAgentNode:
 
         assert len(result["agent_results"]) == 2
 
+    def test_out_of_bounds_index_returns_error(self, tmp_path: Path):
+        state = _make_state(plan=[], current_step_index=3)
+        config = _make_config(tmp_path)
+        result = execute_agent_node(state, config)
+
+        assert result["is_complete"] is True
+        assert "out of range" in result["error"]
+
 
 class TestEvaluateNode:
     def test_advance_to_next_step(self):
@@ -377,6 +458,15 @@ class TestEvaluateNode:
         result = evaluate_node(state)
         assert result["is_complete"] is True
         assert "No results" in result["error"]
+
+    def test_out_of_bounds_index_completes(self):
+        state = _make_state(
+            plan=[{"agent_type": "coder", "task_description": "Code"}],
+            current_step_index=1,
+            agent_results=[{"success": True, "summary": "Done"}],
+        )
+        result = evaluate_node(state)
+        assert result["is_complete"] is True
 
 
 class TestReviseNode:
@@ -456,7 +546,11 @@ class TestFinalizeNode:
 
 class TestRouting:
     def test_route_after_approval_approve(self):
-        state = _make_state(approval_decision="approve")
+        state = _make_state(
+            approval_decision="approve",
+            plan=[{"agent_type": "coder", "task_description": "Code"}],
+            current_step_index=0,
+        )
         assert route_after_approval(state) == "execute_agent"
 
     def test_route_after_approval_reject(self):
@@ -464,8 +558,15 @@ class TestRouting:
         assert route_after_approval(state) == "finalize"
 
     def test_route_after_approval_default(self):
-        state = _make_state()
+        state = _make_state(
+            plan=[{"agent_type": "coder", "task_description": "Code"}],
+            current_step_index=0,
+        )
         assert route_after_approval(state) == "execute_agent"
+
+    def test_route_after_approval_no_remaining_steps(self):
+        state = _make_state(plan=[], current_step_index=0, approval_decision="approve")
+        assert route_after_approval(state) == "finalize"
 
     def test_route_after_evaluate_revise(self):
         state = _make_state(needs_revision=True)
@@ -875,3 +976,15 @@ class TestLangGraphOrchestrator:
         orch.run("Test get_state", thread_id="state-thread")
         state = orch.get_state("state-thread")
         assert state.values["is_complete"] is True
+
+    def test_close_unregisters_workspace(self, tmp_path: Path):
+        ws = Workspace(root=tmp_path / "ws")
+        orch = LangGraphOrchestrator(
+            workspace=ws,
+            checkpoint_backend="memory",
+        )
+        key = orch._workspace_key
+        assert key in _WORKSPACE_REGISTRY
+
+        orch.close()
+        assert key not in _WORKSPACE_REGISTRY
